@@ -2,33 +2,37 @@
 #
 # Driver Upload Script
 # 
-# This script uploads compiled kernel drivers to Artifactory repositories.
-# It handles two types of drivers:
-# 1. Regular drivers (mpt3sas, mellanox, ice, bnxt_en, mpi3mr, igb)
-# 2. Special drivers (jnl, ufsd)
+# This script automates the process of uploading compiled kernel drivers to Rubrik's Artifactory.
+# It handles two categories of drivers:
+# 1. Regular drivers: mpt3sas, mellanox, ice, bnxt_en, mpi3mr, igb
+# 2. Special drivers: jnl, ufsd
 #
-# The script checks for the existence of each driver file, runs modinfo
-# on kernel modules (.ko files), and uploads them to the appropriate
-# Artifactory directories.
+# For each driver, the script:
+# - Verifies file existence
+# - Runs modinfo on kernel modules (.ko files)
+# - Uploads files to the appropriate Artifactory location
 #
-# Usage: ./upload_drivers.sh
+# The script requires JFrog CLI, which it downloads and configures automatically.
 #
 set -e  # Exit immediately if a command exits with a non-zero status
 
 #--------- Configuration ---------
 
-# Kernel version - used for file naming
+# Kernel version for which these drivers are compiled
 KERNEL_VER="5.15.0-140-rubrik7-generic"
 
 # RC number for special drivers (jnl, ufsd)
 RC_NUMBER="56"
 
-# Artifactory base directories for uploading drivers
+# Artifactory base directories
 ARTIFACTORY_BASE="legacy-archive-local/manufacturing/drivers"
 ARTIFACTORY_SPECIAL="artifactory/files/rubrik/refs"
 
-# Driver Versions (for regular drivers)
-# Format: driver_name -> version string used in artifactory path
+# JFrog CLI binary URL (Ubuntu)
+JFROG_BINARY_URL="https://repository.rubrik.com/artifactory/files/tools/stark/jfrog/jfrog-cli-linux-amd64/2.3.0/jfrog"
+
+# Driver Versions - maps driver names to their version strings
+# These versions are used in the Artifactory path
 declare -A DRIVER_VERSIONS=(
     ["mpt3sas"]="mpt3sas-51.00.00.00"
     ["mellanox"]="mlx-5.8-5.1.1.2"
@@ -38,8 +42,8 @@ declare -A DRIVER_VERSIONS=(
     ["igb"]="igb-5.17.4"
 )
 
-# Driver Files (for regular drivers)
-# Format: driver_name -> space-separated list of files to upload
+# Driver Files - maps driver names to their associated files
+# These are the base filenames without the kernel version suffix
 declare -A DRIVER_FILES=(
     ["mpt3sas"]="mpt3sas.ko"
     ["mellanox"]="mlx5_core.ko mlx_compat.ko mlxfw.ko mlx5_ib.ko mlxdevm.ko"
@@ -49,8 +53,8 @@ declare -A DRIVER_FILES=(
     ["igb"]="igb.ko"
 )
 
-# Special Drivers: jnl and ufsd (driver name -> special file pattern)
-# These drivers follow a different naming convention with kernel version and RC number
+# Special Drivers - maps special driver names to their complete filenames
+# These drivers use a different naming convention that includes kernel version and RC number
 declare -A SPECIAL_DRIVERS=(
     ["jnl"]="jnl.ko.${KERNEL_VER}.${RC_NUMBER}"
     ["ufsd"]="ufsd.ko.${KERNEL_VER}.${RC_NUMBER}"
@@ -58,7 +62,24 @@ declare -A SPECIAL_DRIVERS=(
 
 #--------- Functions ---------
 
-# Run modinfo on kernel module files to display module information
+# Download and configure JFrog CLI for Artifactory uploads
+initiate_setup() {
+    echo "[INIT] Downloading JFrog CLI..."
+    curl -Lo jfrog "$JFROG_BINARY_URL"
+    chmod +x jfrog
+
+    echo "[INIT] Running JFrog CLI setup..."
+    if ! ./jfrog rt p; then
+        # Exit if JFrog CLI setup fails
+        echo "[ERROR] JFrog CLI setup failed. Exiting."
+        exit 1
+    else
+        echo "[INIT] JFrog CLI successfully configured."
+    fi
+}
+
+# Run modinfo command on kernel module files
+# Creates a temporary copy to avoid permission issues
 run_modinfo_if_ko() {
     local file="$1"
     local temp_mod="temp_module.ko"
@@ -70,15 +91,17 @@ run_modinfo_if_ko() {
 }
 
 # Upload a file to JFrog Artifactory
+# Uses the JFrog CLI with the --flat option to preserve filename
 upload_file_to_jfrog() {
     local file="$1"
     local dest_dir="$2"
     echo "Uploading: $file --> $dest_dir/"
-    #jfrog rt upload --flat "$file" "$dest_dir/"
+    ./jfrog rt upload --flat "$file" "$dest_dir/"
     echo "Upload successful."
 }
 
-# Process a regular driver: check files exist and upload them
+# Process a regular driver
+# Checks if each file exists, runs modinfo if it's a kernel module, and uploads it
 process_driver() {
     local driver="$1"
     local version="$2"
@@ -100,7 +123,7 @@ process_driver() {
             if [[ "$file" =~ \.ko ]]; then
                 run_modinfo_if_ko "$file"
             fi
-            
+
             upload_file_to_jfrog "$file" "$full_art_dir"
         else
             echo "[MISSING] $file"
@@ -109,7 +132,8 @@ process_driver() {
     done
 }
 
-# Process a special driver (jnl, ufsd): check file exists and upload it
+# Process a special driver (jnl, ufsd)
+# Checks if the file exists, runs modinfo if it's a kernel module, and uploads it
 process_special_driver() {
     local driver="$1"
     local special_file="$2"
@@ -137,7 +161,10 @@ process_special_driver() {
 
 #--------- Main Execution ----------------
 
-# Process regular drivers (mpt3sas, mellanox, ice, bnxt_en, mpi3mr, igb)
+# Step 1: Initiate setup of jfrog binary and configuration
+initiate_setup
+
+# Step 2: Process regular drivers
 for driver in "${!DRIVER_FILES[@]}"; do
     version="${DRIVER_VERSIONS[$driver]}"
     files="${DRIVER_FILES[$driver]}"
@@ -151,7 +178,7 @@ for driver in "${!DRIVER_FILES[@]}"; do
     process_driver "$driver" "$version" "$ARTIFACTORY_BASE" "$files_to_process"
 done
 
-# Process special drivers (jnl & ufsd)
+# Step 3: Process special drivers (jnl & ufsd)
 for special_driver in "${!SPECIAL_DRIVERS[@]}"; do
     special_file="${SPECIAL_DRIVERS[$special_driver]}"
     process_special_driver "$special_driver" "$special_file" "$ARTIFACTORY_SPECIAL"
