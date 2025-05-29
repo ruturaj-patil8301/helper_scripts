@@ -1,3 +1,7 @@
+# This is the script to upload drivers to their respective folders in artifactory
+# You'll need to set kernel and driver versions as global variables
+# This does not have the jnl and ufsd driver upload procedure as of now
+
 #!/bin/bash
 set -e
 
